@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
-const RAGPipeline = require('../ai/ragPipeline');
-const WorkflowAgent = require('../ai/workflowAgent');
+const RAGPipeline = require('./ai/ragPipeline');
+const WorkflowAgent = require('./ai/workflowAgent');
 
 const app = express();
 const port = process.env.PORT || 3001;
