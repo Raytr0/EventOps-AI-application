@@ -13,22 +13,19 @@ app.use(express.json());
 const ragPipeline = new RAGPipeline();
 const agent = new WorkflowAgent(ragPipeline);
 
-// Initialize the Vector Store when server starts
-ragPipeline.initialize().catch(err => console.error("Failed to initialize RAG:", err));
-
 // Main planning endpoint demonstrating multi-step workflow
 app.post('/api/plan', async (req, res) => {
     try {
         const { sessionId, formData, userReply } = req.body;
-        
+
         // Let the agent update memory
         agent.updateContext(sessionId || 'default_session_1', { formData, userReply });
-        
+
         // Trigger the workflow orchestrator LLM to decide the next step
         const result = await agent.generateNextAction(sessionId || 'default_session_1');
-        
-        res.json({ 
-            status: 'success', 
+
+        res.json({
+            status: 'success',
             data: result
         });
     } catch (error) {
@@ -37,6 +34,22 @@ app.post('/api/plan', async (req, res) => {
     }
 });
 
-app.listen(port, () => {
-    console.log(`Backend server listening at http://localhost:${port}`);
-});
+/**
+ * Initializes the RAG pipeline and starts the server.
+ * This ensures the server doesn't start accepting requests until the knowledge base is ready.
+ */
+async function startServer() {
+    try {
+        // Initialize the Vector Store when server starts
+        await ragPipeline.initialize();
+
+        app.listen(port, () => {
+            console.log(`Backend server listening at http://localhost:${port}`);
+        });
+    } catch (err) {
+        console.error("Failed to initialize RAG or start server:", err);
+        process.exit(1); // Exit if critical components fail to load
+    }
+}
+
+startServer();

@@ -1,116 +1,189 @@
-const { ChatOpenAI } = require('@langchain/openai');
-const { SystemMessage, HumanMessage } = require('langchain/schema');
+const { ChatGoogleGenerativeAI } = require('@langchain/google-genai');
 
 /**
- * Multi-Step Workflow Agent
- * Requirement 2: Agentic Logic
- * Requirement 3: Event Context and State Tracking
- * Requirement 4: Structured Artifact Output
+ * ItineraAI: Multi-Step Workflow Agent
+ * Satisfies Design Specification:
+ * - 4. Multi-Step Workflow Design (Agentic Logic)
+ * - 5. Event Context and Memory Design
+ * - 6. Structured Output Artifact Design
  */
 class WorkflowAgent {
     constructor(ragPipeline) {
         this.rag = ragPipeline;
-        // The memory store per session. Currently mapped by a generic id or just a singleton object for demo.
+        // Centralized state management store (Event Context Memory)
         this.sessions = {}; 
     }
 
-    // Step 1: Ingest Form Data or Replies
     updateContext(sessionId, newData) {
         if (!this.sessions[sessionId]) {
-            this.sessions[sessionId] = { turnCount: 0, formData: {}, conversation: [] };
+            this.sessions[sessionId] = { 
+                turnCount: 0, 
+                state: {
+                    budget: { limit: null, allocated: 0 },
+                    guests: { count: null, demographics: null },
+                    requirements: { dietary: null, accessibility: null },
+                    routing: { destinations: [], dates: null, confirmedHotels: [] },
+                    transportation: []
+                }, 
+                conversation: [] 
+            };
         }
         
-        // Merge structured form data into state
+        const session = this.sessions[sessionId];
+
         if (newData.formData) {
-           this.sessions[sessionId].formData = { 
-               ...this.sessions[sessionId].formData, 
-               ...newData.formData 
-           };
+           const fd = newData.formData;
+           if (fd.budget) session.state.budget.limit = fd.budget;
+           if (fd.guests) session.state.guests.count = fd.guests;
+           if (fd.demographics) session.state.guests.demographics = fd.demographics;
+           if (fd.dietary) session.state.requirements.dietary = fd.dietary;
+           if (fd.accessibility) session.state.requirements.accessibility = fd.accessibility;
+           
+           if (fd.destinations && Array.isArray(fd.destinations) && fd.destinations.length > 0) {
+               session.state.routing.destinations = fd.destinations;
+           } else if (fd.destinations && typeof fd.destinations === 'string') {
+               session.state.routing.destinations = [fd.destinations];
+           } else if (fd.theme && session.state.routing.destinations.length === 0) {
+               session.state.routing.destinations = [fd.theme];
+           }
+
+           if (fd.dates) session.state.routing.dates = fd.dates;
         }
         
-        // Save user replies to clarify constraints
         if (newData.userReply) {
-           this.sessions[sessionId].conversation.push({ role: 'user', content: newData.userReply });
+           session.conversation.push({ role: 'user', content: newData.userReply });
         }
         
-        this.sessions[sessionId].turnCount++;
-        console.log(`Updated Session State for [${sessionId}]:`, this.sessions[sessionId]);
+        session.turnCount++;
+        console.log(`Updated ItineraAI Session State [${sessionId}]:`, JSON.stringify(session.state, null, 2));
     }
 
     async generateNextAction(sessionId) {
         const session = this.sessions[sessionId];
         if (!session) throw new Error("Session not found");
 
-        const { formData, conversation, turnCount } = session;
+        const { state, conversation } = session;
 
-        // Requirement 1: Build a targeted query based on context
-        const query = `Find venues matching budget ${formData.budget || 'any'}, capacity for ${formData.guests || 'any'} guests, dietary needs ${formData.dietary || 'none'}, theme ${formData.theme || 'none'}`;
+        const destStr = state.routing.destinations.join(', ') || 'unspecified regions';
+        const query = `Travel planning for ${destStr}. Budget: ${state.budget.limit || 'any'}. Guests: ${state.guests.count || 'any'}. Dietary: ${state.requirements.dietary || 'none'}, Accessibility: ${state.requirements.accessibility || 'none'}. Find venues, transit rules, and seasonal advisories.`;
         
-        // Requirement 1: Retrieve documents
         const docs = await this.rag.retrieve(query);
         const contextStr = docs.map(d => `[Source: ${d.source}]\n${d.content}`).join("\n\n");
 
-        // Requirement 2: Multi-step Orchestration using an LLM
-        const chat = new ChatOpenAI({
-            openAIApiKey: process.env.OPENAI_API_KEY,
-            modelName: "gpt-3.5-turbo", // Or gpt-4
+        const chat = new ChatGoogleGenerativeAI({
+            apiKey: process.env.GOOGLE_API_KEY,
+            model: "gemini-2.0-flash", // We know this model actually resolved for your key!
             temperature: 0.2
         });
 
-        // Prompt that forces the agent to decide between clarifying conflicts OR generating an itinerary
         const systemPrompt = `
-You are an EventOps AI Assistant orchestrating a multi-step travel and event planning workflow.
+You are ItineraAI, an advanced EventOps AI Assistant orchestrating a multi-step, multi-city travel planning workflow.
 
-You have access to the following user constraints:
-Budget: ${formData.budget || 'Not specified'}
-Guests: ${formData.guests || 'Not specified'}
-Dietary: ${formData.dietary || 'Not specified'}
-Theme: ${formData.theme || 'Not specified'}
+CURRENT EVENT CONTEXT (STATE MEMORY):
+${JSON.stringify(state, null, 2)}
 
-You also have access to the following retrieved Knowledge Base documents:
+RETRIEVED KNOWLEDGE BASE DOCUMENTS (Ground your answers in these to prevent hallucinations):
 ---
 ${contextStr}
 ---
 
-Your task:
-1. Analyze the user constraints against the retrieved documents.
-2. Are there any CONFLICTS? (e.g., budget is lower than venue minimum, or dietary needs cannot be met).
-3. IF there are unresolved conflicts, output JSON to ask a CLARIFICATION question. Be specific about the source of the conflict.
-4. IF there are no conflicts OR the user has resolved them in conversation, output JSON containing a structured ITINERARY artifact.
-5. You MUST cite your sources (e.g., [Source: 01_paris_venue_guide.md]) when generating the artifact.
+YOUR TASK (AGENTIC LOGIC):
+1. Analyze the user's current Event Context against the Retrieved Knowledge Base documents.
+2. Run programmatic validation: Are there any temporal, geographical, or budgetary CONFLICTS? (e.g., trying to schedule 4 cities in 3 days, budget is too low for the requested cities, or a transit route doesn't exist).
+3. IF there are unresolved conflicts, you must output a "Conflict Detection Report" (Format 1).
+4. IF there are no conflicts, you must output a "Multi-City Travel Itinerary" and Secondary Artifacts (Format 2).
 
-Previous conversation history:
+PREVIOUS CONVERSATION:
 ${JSON.stringify(conversation)}
 
-Respond ONLY with valid JSON in one of the following two formats:
+You MUST respond ONLY with valid JSON matching one of the exact schemas below.
 
-Format 1 (Clarification needed):
+--- FORMAT 1: CONFLICT DETECTION REPORT ---
+Use this format if constraints are logically impossible or missing critical data.
 {
-  "type": "clarification",
-  "message": "We found a conflict regarding your budget for the venues in our database. [Source: venue.md] requires X, but your budget is Y. Would you like to increase the budget or look at other options?"
+  "type": "conflict_report",
+  "data": {
+    "identified_conflict": "Describe the temporal, geographical, or budget conflict.",
+    "violated_constraint": "e.g., Budget exceeded by $300, or Transit time exceeds daylight.",
+    "proposed_resolutions": [
+      "Option A: ...",
+      "Option B: ..."
+    ]
+  }
 }
 
-Format 2 (No conflicts, ready to plan):
+--- FORMAT 2: STRUCTURED TRAVEL ITINERARY ARTIFACT ---
+Use this format if the plan is feasible. You MUST cite your sources (e.g., 01_paris_venue_guide.md) in the 'sourceCitation' fields.
 {
   "type": "artifact",
   "data": {
-    "title": "Structured Itinerary for Event",
-    "recommendations": [
-       { "venue": "Name", "justification": "Why it fits", "sourceCitation": "filename.md" }
+    "trip_id": "mc_trip_001",
+    "total_budget_utilized": 1850,
+    "itinerary": [
+      {
+        "day": 1,
+        "date": "YYYY-MM-DD",
+        "city": "City Name",
+        "activities": [
+          {
+            "type": "transit", 
+            "description": "CDG Airport Express",
+            "duration_mins": 60,
+            "source_tool": "Knowledge Base",
+            "warnings": ["Ensure luggage meets specs."],
+            "sourceCitation": "filename.md"
+          },
+          {
+            "type": "activity",
+            "description": "Louvre Museum",
+            "duration_mins": 180,
+            "source_tool": "Knowledge Base",
+            "warnings": [],
+            "sourceCitation": "filename.md"
+          }
+        ]
+      }
     ],
-    "notes": "Any other details"
+    "budget_planning_sheet": {
+      "transit": 200,
+      "lodging": 1000,
+      "food": 650
+    },
+    "planning_checklist": [
+      "Book train tickets 30 days prior",
+      "Verify Schengen visa limits"
+    ],
+    "packing_list": [
+      "Item 1 (based on seasonal/climatic context)"
+    ]
   }
 }
 `;
 
-        const response = await chat.invoke([
-            new SystemMessage(systemPrompt),
-            new HumanMessage("Proceed with the next step.")
-        ]);
+        // To avoid BaseMessage prototype compatibility issues between different Langchain package versions,
+        // we use raw message tuples instead of instantiating SystemMessage / HumanMessage classes.
+        const messages = [
+            ["system", systemPrompt]
+        ];
+        
+        if (conversation && conversation.length > 0) {
+            for (const msg of conversation) {
+                messages.push([msg.role === 'user' ? 'human' : 'ai', msg.content]);
+            }
+        } else {
+            messages.push(["human", "Evaluate the current state memory against the Knowledge Base and proceed with the next planning step."]);
+        }
+
+        let response;
+        try {
+            response = await chat.invoke(messages);
+        } catch(error) {
+            console.error("LLM Generation Error:", error);
+            throw new Error("Failed to generate agent response.");
+        }
 
         let parsedOutput;
         try {
-             // Sometimes the LLM wraps JSON in markdown block ticks
              const cleanedStr = response.content.replace(/```json/g, '').replace(/```/g, '').trim();
              parsedOutput = JSON.parse(cleanedStr);
         } catch(e) {
@@ -118,7 +191,6 @@ Format 2 (No conflicts, ready to plan):
              parsedOutput = { type: 'error', message: 'Failed to generate structured JSON' };
         }
         
-        // Save assistant's reply to context
         session.conversation.push({ role: 'assistant', content: JSON.stringify(parsedOutput) });
 
         return parsedOutput;
