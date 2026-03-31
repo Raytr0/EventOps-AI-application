@@ -72,7 +72,7 @@ class WorkflowAgent {
 
         const chat = new ChatGoogleGenerativeAI({
             apiKey: process.env.GOOGLE_API_KEY,
-            model: "gemini-2.0-flash", // We know this model actually resolved for your key!
+            model: "gemini-2.5-flash", // We know this model actually resolved for your key!
             temperature: 0.2
         });
 
@@ -172,6 +172,11 @@ Use this format if the plan is feasible. You MUST cite your sources (e.g., 01_pa
             }
         } else {
             messages.push(["human", "Evaluate the current state memory against the Knowledge Base and proceed with the next planning step."]);
+        }
+
+        const lastMessageRole = messages[messages.length - 1][0];
+        if (lastMessageRole !== 'human') {
+            messages.push(["human", "Please re-evaluate the current state memory against the Knowledge Base and generate the required JSON."]);
         }
 
         let response;
