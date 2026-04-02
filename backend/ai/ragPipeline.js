@@ -80,7 +80,7 @@ class RAGPipeline {
 
         // Retrieve top 3 relevant chunks
         const results = await this.vectorStore.similaritySearch(query, 3);
-
+        console.log(results);
         return results.map(doc => ({
             source: doc.metadata.source,
             content: doc.pageContent

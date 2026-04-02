@@ -72,133 +72,126 @@ class WorkflowAgent {
 
         const chat = new ChatGoogleGenerativeAI({
             apiKey: process.env.GOOGLE_API_KEY,
-            model: "gemini-2.5-flash", // We know this model actually resolved for your key!
+            model: "gemini-2.5-flash",
             temperature: 0.2
         });
 
-        const systemPrompt = `
-You are ItineraAI, an advanced EventOps AI Assistant orchestrating a multi-step, multi-city travel planning workflow.
+        const validationPrompt = `
+            You are ItineraAI's Validation Agent. 
 
-CURRENT EVENT CONTEXT (STATE MEMORY):
-${JSON.stringify(state, null, 2)}
+            CURRENT EVENT CONTEXT (STATE MEMORY):
+            ${JSON.stringify(state, null, 2)}
 
-RETRIEVED KNOWLEDGE BASE DOCUMENTS (Ground your answers in these to prevent hallucinations):
----
-${contextStr}
----
+            RETRIEVED KNOWLEDGE BASE DOCUMENTS:
+            ---
+            ${contextStr}
+            ---
 
-YOUR TASK (AGENTIC LOGIC):
-1. Analyze the user's current Event Context against the Retrieved Knowledge Base documents.
-2. Run programmatic validation: Are there any temporal, geographical, or budgetary CONFLICTS? (e.g., trying to schedule 4 cities in 3 days, budget is too low for the requested cities, or a transit route doesn't exist).
-3. IF there are unresolved conflicts, you must output a "Conflict Detection Report" (Format 1).
-4. IF there are no conflicts, you must output a "Multi-City Travel Itinerary" and Secondary Artifacts (Format 2).
-
-PREVIOUS CONVERSATION:
-${JSON.stringify(conversation)}
-
-You MUST respond ONLY with valid JSON matching one of the exact schemas below.
-
---- FORMAT 1: CONFLICT DETECTION REPORT ---
-Use this format if constraints are logically impossible or missing critical data.
-{
-  "type": "conflict_report",
-  "data": {
-    "identified_conflict": "Describe the temporal, geographical, or budget conflict.",
-    "violated_constraint": "e.g., Budget exceeded by $300, or Transit time exceeds daylight.",
-    "proposed_resolutions": [
-      "Option A: ...",
-      "Option B: ..."
-    ]
-  }
-}
-
---- FORMAT 2: STRUCTURED TRAVEL ITINERARY ARTIFACT ---
-Use this format if the plan is feasible. You MUST cite your sources (e.g., 01_paris_venue_guide.md) in the 'sourceCitation' fields.
-{
-  "type": "artifact",
-  "data": {
-    "trip_id": "mc_trip_001",
-    "total_budget_utilized": 1850,
-    "itinerary": [
-      {
-        "day": 1,
-        "date": "YYYY-MM-DD",
-        "city": "City Name",
-        "activities": [
-          {
-            "type": "transit", 
-            "description": "CDG Airport Express",
-            "duration_mins": 60,
-            "source_tool": "Knowledge Base",
-            "warnings": ["Ensure luggage meets specs."],
-            "sourceCitation": "filename.md"
-          },
-          {
-            "type": "activity",
-            "description": "Louvre Museum",
-            "duration_mins": 180,
-            "source_tool": "Knowledge Base",
-            "warnings": [],
-            "sourceCitation": "filename.md"
-          }
-        ]
-      }
-    ],
-    "budget_planning_sheet": {
-      "transit": 200,
-      "lodging": 1000,
-      "food": 650
-    },
-    "planning_checklist": [
-      "Book train tickets 30 days prior",
-      "Verify Schengen visa limits"
-    ],
-    "packing_list": [
-      "Item 1 (based on seasonal/climatic context)"
-    ]
-  }
-}
-`;
-
-        // To avoid BaseMessage prototype compatibility issues between different Langchain package versions,
-        // we use raw message tuples instead of instantiating SystemMessage / HumanMessage classes.
-        const messages = [
-            ["system", systemPrompt]
-        ];
-        
-        if (conversation && conversation.length > 0) {
-            for (const msg of conversation) {
-                messages.push([msg.role === 'user' ? 'human' : 'ai', msg.content]);
+            TASK:
+            Analyze the Context against the Documents. Are there any temporal, geographical, or budgetary CONFLICTS? 
+            Respond ONLY with valid JSON in this exact format:
+            {
+              "hasConflict": true,
+              "report": {
+                "identified_conflict": "string or null",
+                "violated_constraint": "string or null",
+                "proposed_resolutions": ["option A", "option B"]
+              }
             }
-        } else {
-            messages.push(["human", "Evaluate the current state memory against the Knowledge Base and proceed with the next planning step."]);
-        }
+        `;
 
-        const lastMessageRole = messages[messages.length - 1][0];
-        if (lastMessageRole !== 'human') {
-            messages.push(["human", "Please re-evaluate the current state memory against the Knowledge Base and generate the required JSON."]);
-        }
-
-        let response;
         try {
-            response = await chat.invoke(messages);
-        } catch(error) {
-            console.error("LLM Generation Error:", error);
-            throw new Error("Failed to generate agent response.");
+            console.log(`[Session ${sessionId}] Phase 1: Running Conflict Validation...`);
+            const validationResponse = await chat.invoke([
+                ["system", validationPrompt], 
+                ...conversation.map(msg => [msg.role === 'user' ? 'human' : 'ai', msg.content]),
+                ["human", "Check the current state memory AND our recent conversation against the Knowledge Base for conflicts. Did I resolve the previous issue?"]
+            ]);
+            
+            const cleanedValidationStr = validationResponse.content.replace(/```json/g, '').replace(/```/g, '').trim();
+            const validationResult = JSON.parse(cleanedValidationStr);
+
+            if (validationResult.hasConflict === true) {
+                console.log(`[Session ${sessionId}] ⚠️ Conflict detected! Halting workflow.`);
+                
+                const conflictOutput = {
+                    type: "conflict_report",
+                    data: validationResult.report
+                };
+                
+                session.conversation.push({ role: 'assistant', content: JSON.stringify(conflictOutput) });
+                return conflictOutput; 
+            }
+
+            console.log(`[Session ${sessionId}] ✅ No conflicts detected. Proceeding to Phase 2: Generation...`);
+
+        } catch (error) {
+            console.error("Phase 1 Validation Error:", error);
+            throw new Error("Failed during the validation step.");
         }
 
-        let parsedOutput;
+        const generationPrompt = `
+          You are ItineraAI's Planning Agent. The user's constraints have been validated and no conflicts exist.
+
+          CURRENT EVENT CONTEXT (STATE MEMORY):
+          ${JSON.stringify(state, null, 2)}
+
+          RETRIEVED KNOWLEDGE BASE DOCUMENTS:
+          ---
+          ${contextStr}
+          ---
+
+          TASK:
+          Generate a Structured Travel Itinerary based on the context and documents. 
+          You MUST cite your sources (e.g., 01_paris_venue_guide.md) in the 'sourceCitation' fields.
+
+          Respond ONLY with valid JSON matching this exact format:
+          {
+            "type": "artifact",
+            "data": {
+              "trip_id": "mc_trip_001",
+              "total_budget_utilized": 1850,
+              "itinerary": [
+                {
+                  "day": 1,
+                  "date": "YYYY-MM-DD",
+                  "city": "City Name",
+                  "activities": [
+                    {
+                      "type": "transit", 
+                      "description": "String",
+                      "duration_mins": 60,
+                      "source_tool": "Knowledge Base",
+                      "warnings": ["String"],
+                      "sourceCitation": "filename.md"
+                    }
+                  ]
+                }
+              ],
+              "budget_planning_sheet": { "transit": 0, "lodging": 0, "food": 0 },
+              "planning_checklist": ["String"],
+              "packing_list": ["String"]
+            }
+          }
+        `;
+
         try {
-             const cleanedStr = response.content.replace(/```json/g, '').replace(/```/g, '').trim();
-             parsedOutput = JSON.parse(cleanedStr);
-        } catch(e) {
-             console.error("Failed to parse LLM output", response.content);
-             parsedOutput = { type: 'error', message: 'Failed to generate structured JSON' };
-        }
-        
-        session.conversation.push({ role: 'assistant', content: JSON.stringify(parsedOutput) });
+            const generationResponse = await chat.invoke([
+                ["system", generationPrompt], 
+                ...conversation.map(msg => [msg.role === 'user' ? 'human' : 'ai', msg.content]),
+                ["human", "Generate the finalized structured travel itinerary JSON."]
+            ]);
+            
+            const cleanedGenStr = generationResponse.content.replace(/```json/g, '').replace(/```/g, '').trim();
+            const finalItinerary = JSON.parse(cleanedGenStr);
 
-        return parsedOutput;
+            session.conversation.push({ role: 'assistant', content: JSON.stringify(finalItinerary) });
+            return finalItinerary;
+
+        } catch (error) {
+            console.error("Phase 2 Generation Error:", error);
+            throw new Error("Failed during the generation step.");
+        }
     }
 }
 
