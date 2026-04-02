@@ -16,7 +16,7 @@ The system focuses on helping users coordinate complex travel logistics such as 
 ## Deliverable 2 Foundation Prototype
 
 This deliverable implements the **four core system requirements**:
-1. **RAG Pipeline (Event Knowledge Base):** The `data/` directory contains 9 Markdown files acting as our knowledge base. We use LangChain's `MemoryVectorStore` with OpenAI Embeddings to retrieve documents dynamically.
+1. **RAG Pipeline (Event Knowledge Base):** The `data/` directory contains 9 Markdown files acting as our knowledge base. We use LangChain's `MemoryVectorStore` with Google's Embeddings to retrieve documents dynamically.
 2. **Multi-Step Workflow:** Powered by `@langchain/google-genai`, the agent reasons over constraints and explicitly asks clarification questions if conflicts are found between user input and venue policies.
 3. **Event Context and State Tracking:** Handled in memory. The system records the initial form submission and stores the conversation history to allow multiple turns of clarifications before generating a final itinerary.
 4. **Structured Artifact Output:** Outputs are dynamically generated structured JSON objects based on the retrieved context and resolved constraints.
@@ -24,7 +24,7 @@ This deliverable implements the **four core system requirements**:
 ## Setup Instructions for TA
 
 ### 1. Environment Variables
-You will need an OpenAI API Key. In the `/backend` folder, create a `.env` file and add your key:
+You will need an Google API Key. In the `/backend` folder, create a `.env` file and add your key:
 ```
 GOOGLE_API_KEY=sk-your-api-key-here
 PORT=3001
